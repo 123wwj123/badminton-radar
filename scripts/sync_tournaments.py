@@ -9,9 +9,8 @@ CF_API_TOKEN = os.environ["CF_API_TOKEN"]
 
 D1_QUERY_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query"
 
-# 微比赛公共大厅 + 地方承办机构渠道列表
+# 微比赛地方承办机构渠道列表（后续可随时追加其他城市的 *.m.weibisai.com 子域名）
 WEIBISAI_CHANNELS = [
-    {"name": "微比赛主站大厅", "base_url": "https://m.weibisai.com"},
     {"name": "微比赛·德仁体育", "base_url": "https://drsports.m.weibisai.com"},
 ]
 
@@ -69,12 +68,13 @@ def fetch_weibisai_channel(channel: dict) -> list[dict]:
 
     events = []
     page = 1
-    while page <= 10:  # 最多翻 10 页
+    while page <= 10:
+        # 严格对齐抓包 Form data 参数
         payload = {
             "page": page,
-            "limit": 20,
-            "sports": 100,  # 100 = 羽毛球
-            "state": 0      # 0 = 全部状态（可在下方按需过滤已结束）
+            "type": 0,
+            "state": -1,
+            "year": -1
         }
         try:
             resp = requests.post(api_url, headers=headers, data=payload, timeout=15)
@@ -90,8 +90,8 @@ def fetch_weibisai_channel(channel: dict) -> list[dict]:
                 break
 
             for m in match_list:
-                # 排除非羽毛球赛事（如标题含登山等误挂分类）
                 title = str(m.get("name") or "").strip()
+                # 严格过滤羽毛球赛事（排除如登山比赛等非羽毛球项目）
                 if m.get("sports") != 100 or "登山" in title:
                     continue
 
@@ -99,10 +99,7 @@ def fetch_weibisai_channel(channel: dict) -> list[dict]:
                 state = m.get("state")
                 state_text = str(m.get("state_text") or "")
 
-                # 状态映射：1=即将开始/预告, 2=报名中, 3=报名截止/进行中, 4=比赛结束
                 if state == 4 or "结束" in state_text:
-                    # 如果只想要未结束赛事，可取消下一行注释；当前先同步最新赛事方便前端展示
-                    # continue
                     status = "full"
                 elif m.get("enrollFull") or "满" in state_text or "截止" in state_text:
                     status = "full"
