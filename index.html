@@ -7,7 +7,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen">
-  <!-- 顶部导航 -->
   <header class="bg-emerald-600 text-white shadow-sm sticky top-0 z-10">
     <div class="max-w-5xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
       <div>
@@ -16,31 +15,22 @@
         </h1>
         <p class="text-emerald-100 text-xs mt-0.5">实时聚合各地公开赛、俱乐部积分赛与团体赛信息</p>
       </div>
-      <div class="text-xs bg-emerald-700/60 px-3 py-1.5 rounded-full self-start sm:self-auto">
+      <div id="eventCountBadge" class="text-xs bg-emerald-700/60 px-3 py-1.5 rounded-full self-start sm:self-auto">
         数据持续同步中
       </div>
     </div>
   </header>
 
-  <!-- 筛选控制区 -->
   <main class="max-w-5xl mx-auto px-4 py-6">
     <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 mb-6 space-y-4">
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <!-- 城市选择 -->
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">举办城市</label>
           <select id="cityFilter" class="w-full rounded-lg border-slate-300 border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
             <option value="全部">全部城市</option>
-            <option value="深圳市">深圳市</option>
-            <option value="杭州市">杭州市</option>
-            <option value="广州市">广州市</option>
-            <option value="上海市">上海市</option>
-            <option value="北京市">北京市</option>
-            <option value="成都市">成都市</option>
           </select>
         </div>
 
-        <!-- 报名状态 -->
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">报名状态</label>
           <select id="statusFilter" class="w-full rounded-lg border-slate-300 border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
@@ -51,7 +41,6 @@
           </select>
         </div>
 
-        <!-- 关键词搜索 -->
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">关键词检索</label>
           <div class="flex gap-2">
@@ -66,7 +55,6 @@
       </div>
     </div>
 
-    <!-- 赛事列表容器 -->
     <div id="loading" class="text-center py-12 text-slate-400 hidden">正在加载赛事数据...</div>
     <div id="emptyState" class="text-center py-12 bg-white rounded-xl border border-slate-200 hidden">
       <p class="text-slate-500 text-sm">暂无符合筛选条件的羽毛球赛事</p>
@@ -81,6 +69,22 @@
       full: { text: '名额已满', cls: 'bg-slate-100 text-slate-600' }
     };
 
+    function updateCityOptions(cities) {
+      if (!Array.isArray(cities)) return;
+      const select = document.getElementById('cityFilter');
+      const currentVal = select.value;
+      select.innerHTML = '<option value="全部">全部城市</option>';
+      cities.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        select.appendChild(opt);
+      });
+      if (cities.includes(currentVal)) {
+        select.value = currentVal;
+      }
+    }
+
     async function fetchTournaments() {
       const city = document.getElementById('cityFilter').value;
       const status = document.getElementById('statusFilter').value;
@@ -89,6 +93,7 @@
       const listEl = document.getElementById('eventList');
       const loadingEl = document.getElementById('loading');
       const emptyEl = document.getElementById('emptyState');
+      const countBadge = document.getElementById('eventCountBadge');
 
       listEl.innerHTML = '';
       emptyEl.classList.add('hidden');
@@ -100,10 +105,17 @@
         const json = await res.json();
         loadingEl.classList.add('hidden');
 
+        if (json.cities) {
+          updateCityOptions(json.cities);
+        }
+
         if (!json.success || !json.data || json.data.length === 0) {
+          countBadge.textContent = '共 0 场赛事';
           emptyEl.classList.remove('hidden');
           return;
         }
+
+        countBadge.textContent = `共检索到 ${json.data.length} 场赛事`;
 
         json.data.forEach(item => {
           let categories = [];
@@ -151,7 +163,6 @@
       if (e.key === 'Enter') fetchTournaments();
     });
 
-    // 页面加载自动查询
     fetchTournaments();
   </script>
 </body>
