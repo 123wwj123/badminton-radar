@@ -21,18 +21,25 @@ export async function onRequestGet(context) {
     }
 
     if (keyword) {
-      query += ` AND (title LIKE ? OR venue LIKE ? OR province LIKE ?)`;
+      query += ` AND (title LIKE ? OR venue LIKE ? OR province LIKE ? OR city LIKE ?)`;
       const likeKey = `%${keyword}%`;
-      params.push(likeKey, likeKey, likeKey);
+      params.push(likeKey, likeKey, likeKey, likeKey);
     }
 
-    query += ` ORDER BY match_date ASC LIMIT 100`;
+    query += ` ORDER BY match_date ASC LIMIT 200`;
 
-    // env.DB 对应稍后在 Cloudflare Pages 后台绑定的 D1 变量名
-    const stmt = env.DB.prepare(query).bind(...params);
-    const { results } = await stmt.all();
+    const [eventsRes, citiesRes] = await Promise.all([
+      env.DB.prepare(query).bind(...params).all(),
+      env.DB.prepare(`SELECT DISTINCT city FROM tournaments WHERE city IS NOT NULL AND city != '' ORDER BY city ASC`).all()
+    ]);
 
-    return new Response(JSON.stringify({ success: true, data: results }), {
+    const cities = (citiesRes.results || []).map(row => row.city);
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: eventsRes.results,
+      cities
+    }), {
       headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (err) {
