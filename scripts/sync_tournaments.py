@@ -2,7 +2,6 @@ import os
 import json
 import requests
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CF_ACCOUNT_ID = os.environ["CF_ACCOUNT_ID"]
 CF_DATABASE_ID = os.environ["CF_DATABASE_ID"]
@@ -10,13 +9,11 @@ CF_API_TOKEN = os.environ["CF_API_TOKEN"]
 
 D1_QUERY_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query"
 
-BASE_URL = "https://drsports.m.weibisai.com"
-COMMON_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": f"{BASE_URL}/www/?_v=1013",
-    "Accept": "application/json, text/plain, */*",
-    "X-Requested-With": "XMLHttpRequest"
-}
+# 微比赛公共大厅 + 地方承办机构渠道列表
+WEIBISAI_CHANNELS = [
+    {"name": "微比赛主站大厅", "base_url": "https://m.weibisai.com"},
+    {"name": "微比赛·德仁体育", "base_url": "https://drsports.m.weibisai.com"},
+]
 
 
 def execute_d1_sql(sql: str, params: list = None):
@@ -36,118 +33,122 @@ def execute_d1_sql(sql: str, params: list = None):
     return data
 
 
-def probe_weibisai_single_match(match_id: int) -> dict | None:
+def normalize_date(raw_date_range: str) -> tuple[str, str]:
     """
-    通过微比赛公开赛事详情接口探测单个赛事信息（无需登录 Token）
+    将 '2026.11.07 - 11.08' 或 '2026.10.14 - 10.30' 格式化为标准 YYYY-MM-DD
     """
-    candidate_endpoints = [
-        f"{BASE_URL}/api/{match_id}/match/index",
-        f"{BASE_URL}/api/{match_id}/match/get_match_info",
-    ]
-    for url in candidate_endpoints:
-        try:
-            resp = requests.get(url, headers=COMMON_HEADERS, timeout=8)
-            if resp.status_code != 200:
-                continue
-            text = resp.text.strip()
-            if not text.startswith("{"):
-                continue
-            data = json.loads(text)
-            m_info = data.get("matchInfo") or data.get("data", {}).get("matchInfo") or data.get("data")
-            if not isinstance(m_info, dict):
-                continue
-
-            title = str(m_info.get("matchName") or m_info.get("title") or m_info.get("name") or "").strip()
-            if not title:
-                continue
-
-            # 过滤非羽毛球赛事（若接口明确返回项目类型或标题不含羽毛球关键词则跳过）
-            sport_name = str(m_info.get("sportName") or m_info.get("itemName") or "")
-            if "羽" not in title and "羽" not in sport_name:
-                return None
-
-            # 提取状态
-            state_text = str(m_info.get("state_text") or m_info.get("statusText") or "")
-            if "结束" in state_text or "关闭" in state_text:
-                return None  # 已结束赛事跳过
-            elif "满" in state_text or "截止" in state_text:
-                status = "full"
-            elif "即将" in state_text or "未开始" in state_text:
-                status = "upcoming"
-            else:
-                status = "open"
-
-            # 提取项目组别列表
-            raw_events = data.get("eventList") or data.get("events") or m_info.get("eventList") or []
-            categories = []
-            if isinstance(raw_events, list):
-                for ev in raw_events:
-                    if isinstance(ev, dict) and ev.get("eventName"):
-                        categories.append(ev["eventName"])
-            if not categories:
-                categories = ["公开组"]
-
-            city = str(m_info.get("cityName") or m_info.get("city") or "").strip()
-            if not city:
-                # 尝试从标题中提取常见城市名（如“合肥市羽毛球联赛”）
-                for suffix in ["市", "州", "区"]:
-                    idx = title.find(suffix)
-                    if 1 <= idx <= 4:
-                        city = title[:idx + 1]
-                        break
-            if not city:
-                city = "全国/其他"
-
-            match_date = str(m_info.get("matchStartTime") or m_info.get("startTime") or m_info.get("beginDate") or "")[:10]
-            if not match_date:
-                match_date = datetime.now().strftime("%Y-%m-%d")
-
-            signup_deadline = str(m_info.get("enrollEndTime") or m_info.get("endTime") or "")[:10]
-
-            return {
-                "source_platform": "微比赛",
-                "source_id": f"wbs_{match_id}",
-                "title": title,
-                "province": str(m_info.get("provinceName") or m_info.get("province") or ""),
-                "city": city,
-                "district": str(m_info.get("areaName") or m_info.get("district") or ""),
-                "venue": str(m_info.get("address") or m_info.get("stadium") or m_info.get("place") or "详见微比赛详情页"),
-                "match_date": match_date,
-                "signup_deadline": signup_deadline,
-                "categories": json.dumps(categories, ensure_ascii=False),
-                "skill_level": str(m_info.get("levelDesc") or "见规程"),
-                "entry_fee": str(m_info.get("feeDesc") or m_info.get("enrollFee") or "见详情"),
-                "signup_url": f"{BASE_URL}/www/?_v=1013#/match/{match_id}",
-                "status": status
-            }
-        except Exception:
-            continue
-    return None
+    if not raw_date_range:
+        return datetime.now().strftime("%Y-%m-%d"), ""
+    parts = [p.strip() for p in raw_date_range.split("-")]
+    start_str = parts[0].replace(".", "-")
+    end_str = ""
+    if len(parts) > 1:
+        end_part = parts[1].replace(".", "-")
+        if len(end_part) <= 5 and len(start_str) >= 4:
+            end_str = f"{start_str[:4]}-{end_part}"
+        else:
+            end_str = end_part
+    return start_str, end_str
 
 
-def fetch_weibisai_events() -> list[dict]:
+def fetch_weibisai_channel(channel: dict) -> list[dict]:
     """
-    基于已知最新赛事 ID (18954) 周边区间扫描最新上架的羽毛球赛事
+    调用真实 POST /api/channel/search_match 接口抓取羽毛球赛事
     """
+    base_url = channel["base_url"]
+    source_name = channel["name"]
+    api_url = f"{base_url}/api/channel/search_match"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Referer": f"{base_url}/www/?_v=1013",
+        "Origin": base_url,
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept": "application/json, text/plain, */*"
+    }
+
     events = []
-    # 扫描 18900 ~ 19150 区间内的公开赛事（覆盖近期及未来上架的赛事）
-    target_ids = list(range(18900, 19150))
-    print(f"正在并发扫描微比赛赛事区间 [{target_ids[0]} - {target_ids[-1]}]...")
+    page = 1
+    while page <= 10:  # 最多翻 10 页
+        payload = {
+            "page": page,
+            "limit": 20,
+            "sports": 100,  # 100 = 羽毛球
+            "state": 0      # 0 = 全部状态（可在下方按需过滤已结束）
+        }
+        try:
+            resp = requests.post(api_url, headers=headers, data=payload, timeout=15)
+            if resp.status_code != 200:
+                print(f"[{source_name}] 第 {page} 页返回状态码 {resp.status_code}")
+                break
 
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        future_to_id = {executor.submit(probe_weibisai_single_match, mid): mid for mid in target_ids}
-        for future in as_completed(future_to_id):
-            res = future.result()
-            if res:
-                print(f"  [命中] {res['city']} | {res['title']} ({res['match_date']})")
-                events.append(res)
+            res_json = resp.json()
+            match_list = res_json.get("matchList") or []
+            print(f"[{source_name}] 第 {page} 页获取到 {len(match_list)} 条记录 (总数: {res_json.get('count', 0)})")
+
+            if not match_list:
+                break
+
+            for m in match_list:
+                # 排除非羽毛球赛事（如标题含登山等误挂分类）
+                title = str(m.get("name") or "").strip()
+                if m.get("sports") != 100 or "登山" in title:
+                    continue
+
+                match_id = m.get("id")
+                state = m.get("state")
+                state_text = str(m.get("state_text") or "")
+
+                # 状态映射：1=即将开始/预告, 2=报名中, 3=报名截止/进行中, 4=比赛结束
+                if state == 4 or "结束" in state_text:
+                    # 如果只想要未结束赛事，可取消下一行注释；当前先同步最新赛事方便前端展示
+                    # continue
+                    status = "full"
+                elif m.get("enrollFull") or "满" in state_text or "截止" in state_text:
+                    status = "full"
+                elif state == 1 or "即将" in state_text or "未开始" in state_text:
+                    status = "upcoming"
+                else:
+                    status = "open"
+
+                play_start, _ = normalize_date(m.get("playDates", ""))
+                _, enroll_end = normalize_date(m.get("enrollDates", ""))
+
+                mode_text = m.get("sports_mode_text") or "公开组"
+                categories = [mode_text]
+                if m.get("isPoint"):
+                    categories.append("积分赛")
+
+                events.append({
+                    "source_platform": source_name,
+                    "source_id": f"wbs_{match_id}",
+                    "title": title,
+                    "province": m.get("province") or "",
+                    "city": m.get("city") or "未知城市",
+                    "district": "",
+                    "venue": m.get("address") or "详见微比赛详情页",
+                    "match_date": play_start,
+                    "signup_deadline": enroll_end or "见详情",
+                    "categories": json.dumps(categories, ensure_ascii=False),
+                    "skill_level": f"已报名 {m.get('enroll_count', 0)} 人/队",
+                    "entry_fee": "见报名页",
+                    "signup_url": f"{base_url}/www/?_v=1013#/match/{match_id}",
+                    "status": status
+                })
+
+            if res_json.get("noMore", True):
+                break
+            page += 1
+        except Exception as e:
+            print(f"[{source_name}] 第 {page} 页抓取异常: {e}")
+            break
 
     return events
 
 
 def upsert_events_to_d1(events: list[dict]):
     if not events:
-        print("本次未获取到新的有效羽毛球赛事数据。")
+        print("本次未获取到有效羽毛球赛事数据。")
         return
 
     upsert_sql = """
@@ -158,12 +159,13 @@ def upsert_events_to_d1(events: list[dict]):
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(source_id) DO UPDATE SET
         title = excluded.title,
+        province = excluded.province,
         city = excluded.city,
         venue = excluded.venue,
         match_date = excluded.match_date,
         signup_deadline = excluded.signup_deadline,
         categories = excluded.categories,
-        entry_fee = excluded.entry_fee,
+        skill_level = excluded.skill_level,
         status = excluded.status,
         updated_at = CURRENT_TIMESTAMP;
     """
@@ -183,10 +185,12 @@ def upsert_events_to_d1(events: list[dict]):
         except Exception as e:
             print(f"写入赛事 [{ev['title']}] 失败: {e}")
 
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 同步完成，共更新/插入 {success_count} 条真实赛事。")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 同步完成，共写入/更新 {success_count} 条真实赛事！")
 
 
 if __name__ == "__main__":
-    print("开始抓取各地羽毛球赛事...")
-    all_events = fetch_weibisai_events()
+    print("开始通过 search_match 接口同步各地羽毛球赛事...")
+    all_events = []
+    for ch in WEIBISAI_CHANNELS:
+        all_events.extend(fetch_weibisai_channel(ch))
     upsert_events_to_d1(all_events)
